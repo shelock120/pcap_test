@@ -1,77 +1,55 @@
 #include <pcap.h>
 #include <stdio.h>
+#include <stdint.h>
+#include<cstdlib>
+#include <netinet/in.h>
+#include "libnet-headers.h"
 
-void dump(const u_char * p, int len) {
-	int a,i;
-	int iphdrlen;
-	int ipstndrd;
-	int tcphdrlen;
-	int hdrslen;
+void dump(libnet_ethernet_hdr *eth_hdr, libnet_ipv4_hdr *ip_hdr, libnet_tcp_hdr * tcp_hdr, const u_char * packet) {
+	int i;
+	int ip_hdr_len;
+	int pckt_len;
+	int tcp_hdr_len;
+	int data_len;
+	int p;
 
-	printf("dump:\n");
- for(int i = 0; i < len; i++){
-  printf("%02x ",*p);
-  p++;
-  if((i & 0x0f) == 0x0f)
-   printf("\n");
- }
-    p = p - len;
-	printf("\n\ndst mac : ");
-	for (int i = 0; i < 6; i++) {
-		printf("%02x", p[i]);
-		if (i == 5) break;
-		printf(":");
-	}
-	printf("\nsrc mac : ");
-	for (int i = 6; i < 12; i++) {
-		printf("%02x", p[i]);
-		if (i == 11) break;
-		printf(":");
-	}
-	iphdrlen = (p[14] & 0x0f) * 4;
-	ipstndrd = iphdrlen - 20;
-	printf("\nsrc ip : ");
-	for (int i = 26; i < 30; i++) {
-		printf("%d", p[i]);
-		if (i == 29) break;
-		printf(".");
-	}
-	printf("\ndst ip : ");
-	for (int i = 30; i < 34; i++) {
-		printf("%d", p[i]);
-		if (i == 33) break;
-		printf(":");
-	}
-
-	tcphdrlen = (p[46 + ipstndrd] & 0xf0)  / 4;
+	printf("\nSrc MAC : %02x:%02x:%02x:%02x:%02x:%02x", eth_hdr -> ether_shost[0],eth_hdr -> ether_shost[1],eth_hdr -> ether_shost[2],eth_hdr -> ether_shost[3],eth_hdr -> ether_shost[4],eth_hdr -> ether_shost[5]);
+	printf("\nDst MAC : %02x:%02x:%02x:%02x:%02x:%02x", eth_hdr -> ether_dhost[0],eth_hdr -> ether_dhost[1],eth_hdr -> ether_dhost[2],eth_hdr -> ether_dhost[3],eth_hdr -> ether_dhost[4],eth_hdr -> ether_dhost[5]);
 	
-	printf("\nsrc port : ");
-	a = (p[34+ipstndrd]*256) + p[35+ipstndrd];
-	printf("%d", a);
-	if (a == 443) printf("(https)");
+	ip_hdr_len = (ip_hdr -> ip_hl * 4);
+	pckt_len = ip_hdr -> ip_len;
+	tcp_hdr_len = (tcp_hdr -> th_off * 4);
+	data_len = pckt_len - ip_hdr_len - tcp_hdr_len;
 	
-	printf("\ndst port : ");
-	a = (p[36+ipstndrd]*256) + p[37+ipstndrd];
-	printf("%d", a);
-	printf("\n\n");
+	printf("\nSrc IP : %d.%d.%d.%d",ip_hdr -> ip_src[0], ip_hdr -> ip_src[1], ip_hdr -> ip_src[2], ip_hdr -> ip_src[3]);
+	printf("\nDst IP : %d.%d.%d.%d",ip_hdr -> ip_dst[0], ip_hdr -> ip_dst[1], ip_hdr -> ip_dst[2], ip_hdr -> ip_dst[3]);
 	
-	hdrslen = 14 + iphdrlen + tcphdrlen;
-	printf("additional data: ");
-	i = hdrslen;
-	for (; (i < len && i < hdrslen + 32); i++) {
+	printf("\nSrc PORT : %d", tcp_hdr -> th_sport);
+	printf("\nDst PORT : %d", tcp_hdr -> th_dport);
+	
+	printf("\nAdditional data... \n");
+	if(data_len == 0) printf("NULL");
+	else {
+		p = sizeof(struct libnet_ethernet_hdr) + ip_hdr_len + tcp_hdr_len;
+		i = data_len;
+	for (int cnt = 0; (cnt < i) && (cnt < 32); p++, cnt++) {
 		
-		printf("%02x ", p[i]);
-		if(((i-hdrslen) & 0x0f) == 0x0f)
+		printf("%02x ", packet[p]);
+		if((cnt & 0x0f) == 0x0f)
         printf("\n");
 	}
-	if(i == hdrslen) printf("NULL");
+	
 	printf("\n\n");
+	}
+	
 }
 
-int check(const u_char * p) {
-	if (p[23] == 0x06)
-		return 0;
-	else return 1;
+bool check(libnet_ethernet_hdr *eth_hdr,libnet_ipv4_hdr *ip_hdr ) {
+	
+	if ((ip_hdr -> ip_p == IPPROTO_TCP) && (eth_hdr -> ether_type == ETHERTYPE_IP)){
+		return true;
+	}
+	else return false;
 }
 	
 
@@ -85,6 +63,10 @@ int main(int argc, char* argv[]) {
     usage();
     return -1;
   }
+  bool chk;
+  struct libnet_ethernet_hdr *eth_hdr = (libnet_ethernet_hdr*)malloc(sizeof(libnet_ethernet_hdr));
+  struct libnet_ipv4_hdr *ip_hdr = (libnet_ipv4_hdr*)malloc(sizeof(libnet_ipv4_hdr));
+  struct libnet_tcp_hdr *tcp_hdr = (libnet_tcp_hdr*)malloc(sizeof(libnet_tcp_hdr));
 
   char* dev = argv[1];
   char errbuf[PCAP_ERRBUF_SIZE];
@@ -97,15 +79,31 @@ int main(int argc, char* argv[]) {
   while (true) {
     struct pcap_pkthdr* header;
     const u_char* packet;
-	int chk;
     int res = pcap_next_ex(handle, &header, &packet);
     if (res == 0) continue;
     if (res == -1 || res == -2) break;
-    
-	chk = check(packet);
-	if (chk == 0) {
-		printf("%u bytes captured\n", header->caplen);
-		dump(packet, header->caplen);
+    const u_char* p;
+    p = packet;
+    eth_hdr = (struct libnet_ethernet_hdr *) p;
+    p += sizeof(struct libnet_ethernet_hdr);
+    ip_hdr = (struct libnet_ipv4_hdr *) p;
+    u_int16_t byte = eth_hdr -> ether_type;
+    eth_hdr -> ether_type = ntohs(byte);
+	p += ((ip_hdr -> ip_hl) * 4);
+    tcp_hdr = (struct libnet_tcp_hdr *)p ;
+    byte = tcp_hdr -> th_sport;
+    tcp_hdr -> th_sport = ntohs(byte);
+    byte = tcp_hdr -> th_dport;
+    tcp_hdr -> th_dport = ntohs(byte);
+
+    printf("%u bytes captured...\n", header->caplen);
+	
+	chk = check(eth_hdr, ip_hdr);
+	if (chk) {
+
+		printf("\n%u bytes captured...", header->caplen);
+		dump(eth_hdr, ip_hdr, tcp_hdr, packet);
+
 	}
   }
 
@@ -113,17 +111,3 @@ int main(int argc, char* argv[]) {
   return 0;
 }
 
-/*
-1. ip header의 23번째 protocol이 tcp인 0x06을 가리키는가
-2. Ethernet Header의 src mac / dst mac
-dst mac : packet[0]~packet[5]
-src mac : packet[6]~packet[11]
-(IP인 경우) IP Header의 src ip / dst ip
-src ip : packet[26]~packet[29]
-dst ip : packet[30]~packet[33]
-(TCP인 경우) TCP Header의 src port / dst port
-src port : packet[34]~packet[35]
-dst port : packet[36]~packet[37]
-(Data가 존재하는 경우) 해당 Payload(Data)의 hexa decimal value(32바이트까지만)
-
-*/
